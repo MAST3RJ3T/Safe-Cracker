@@ -2,26 +2,25 @@
 
 ## Rotary-Encoder Safe Cracking Game (DE1-SoC / Nios V)
 
-A bare-metal C game for the Intel DE1-SoC that turns the board into a physical safe. A real
+A bare-metal C game for the DE1-SoC that turns the board into a physical safe. A real
 rotary encoder — mounted in a custom 3D-printed enclosure and wired into the FPGA's JP1
 expansion header — drives a live safe dial rendered on a 320x240 VGA display. The player
 spins the dial to find a randomly generated combination, listening for audio cues and
 alternating rotation direction like a real lock, all before a countdown timer runs out.
 
-Everything runs on a Nios V soft processor with no operating system: interrupt-driven I/O,
+Everything runs on a Nios V processor with no operating system: interrupt-driven I/O,
 a hand-written double-buffered graphics pipeline, fixed-point trigonometry, and a
 FIFO-managed audio engine.
 
 By: **Tej Patel** & **Leo Zou**
-ECE243 — Computer Organization, University of Toronto
 
 ---
 
 ## Demo
 
-**Demo video:** [Watch on Google Drive](https://drive.google.com/file/d/1jstQclyEpFpwkT6OPigZCI7hnV77oXO9/view?usp=drive_link)
+**Video:** [Google Drive](https://drive.google.com/file/d/1jstQclyEpFpwkT6OPigZCI7hnV77oXO9/view?usp=drive_link)
 
-**Project pictures (hardware, enclosure, board setup):** [Google Drive folder](https://drive.google.com/drive/folders/1qsyP7JgdmJ4kz1QdTN5XOlyEALHF50tc?usp=drive_link)
+**Project pictures (hardware, enclosure, board setup):** [Google Drive Folder](https://drive.google.com/drive/folders/1qsyP7JgdmJ4kz1QdTN5XOlyEALHF50tc?usp=drive_link)
 
 | Start screen | Help screen |
 | --- | --- |
@@ -35,7 +34,7 @@ ECE243 — Computer Organization, University of Toronto
 
 ## Repository Structure
 
-* `docs/` — final report, project plan, block diagram, JP1 pinout, and the Tinkercad
+* `docs/` — final report, project plan, block diagram, JP1 pinout, and the
   enclosure model (`243 SafeCracker.3mf`).
 * `image-assets/` — source `.png` art, the exported RGB565 `.c` arrays, and the image
   conversion script.
@@ -43,8 +42,7 @@ ECE243 — Computer Organization, University of Toronto
 
 > **Academic Integrity & Licensing**
 > To comply with the University of Toronto's academic integrity policy, the C source code
-> for this course project is **not** published in this repository. This README documents the
-> design; the assets, documentation, and hardware work are included.
+> for this course project is **not** published in this repository. 
 
 ---
 
@@ -53,7 +51,7 @@ ECE243 — Computer Organization, University of Toronto
 | Component | Detail |
 | --- | --- |
 | Board | Intel DE1-SoC (Cyclone V) |
-| Processor | Nios V soft RISC-V core, bare-metal C |
+| Processor | Nios V  |
 | Input | Rotary encoder on JP1 (GPIO 0), KEY0–3, SW0–9 |
 | Output | VGA 320x240 @ 16-bit RGB565, audio codec, HEX0–5, LEDR0–9 |
 | Enclosure | Custom rotary-encoder and wiring housing, modelled in Tinkercad and 3D printed |
@@ -61,7 +59,7 @@ ECE243 — Computer Organization, University of Toronto
 
 ### Rotary encoder wiring
 
-The encoder's two quadrature phases are wired into the JP1 expansion header (D0 and D1)
+The encoder's DT and CLK pins are wired into the JP1 expansion header (D0 and D1)
 alongside 3.3 V and ground. D0 is configured as an edge-triggered interrupt source; D1 is
 sampled inside the ISR to recover direction.
 
