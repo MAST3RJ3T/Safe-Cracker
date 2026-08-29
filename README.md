@@ -2,15 +2,13 @@
 
 ## Rotary-Encoder Safe Cracking Game (DE1-SoC / Nios V)
 
-A bare-metal C game for the DE1-SoC that turns the board into a physical safe. A real
-rotary encoder — mounted in a custom 3D-printed enclosure and wired into the FPGA's JP1
-expansion header — drives a live safe dial rendered on a 320x240 VGA display. The player
-spins the dial to find a randomly generated combination, listening for audio cues and
-alternating rotation direction like a real lock, all before a countdown timer runs out.
+A safe cracking game written in C for the DE1-SoC. A real rotary encoder, mounted in a
+3D-printed case and wired into the board's JP1 header, turns a safe dial drawn on a 320x240
+VGA display. The player spins the dial to find a random combination, using audio cues and
+alternating the turn direction like a real lock, before the timer runs out.
 
-Everything runs on a Nios V processor with no operating system: interrupt-driven I/O,
-a hand-written double-buffered graphics pipeline, fixed-point trigonometry, and a
-FIFO-managed audio engine.
+The game runs on a Nios V processor with no operating system. Interrupt handling, the
+graphics, the math for the dial, and the audio playback are all written from scratch.
 
 By: **Tej Patel** & **Leo Zou**
 
@@ -59,33 +57,33 @@ By: **Tej Patel** & **Leo Zou**
 
 ### Rotary encoder wiring
 
-The encoder's DT and CLK pins are wired into the JP1 expansion header (D0 and D1)
-alongside 3.3 V and ground. D0 is configured as an edge-triggered interrupt source; D1 is
-sampled inside the ISR to recover direction.
+The encoder's DT and CLK pins are wired into the JP1 expansion header (D0 and D1) along with
+3.3 V and ground. D0 triggers an interrupt on every edge, and D1 is read inside the handler
+to work out which way the dial turned.
 
 ![JP1 pinout](docs/JP1_pins.png)
 
 ### Enclosure
 
-The bare encoder module is far too small to spin like a safe dial, and its jumper wires pull
-loose under repeated rotation. A housing was modelled in Tinkercad and 3D printed to hold
-the encoder body rigid, route and strain-relieve the wires out the back, and give the whole
-assembly a stable base to sit on while being turned. The printable model is included at
+The encoder module on its own is too small to spin like a safe dial, and the jumper wires
+come loose when you keep turning it. I modelled a case in Tinkercad and 3D printed it to
+hold the encoder in place, route the wires out the back, and give the whole thing a stable
+base to sit on. The model is at
 [`docs/243 SafeCracker.3mf`](docs/243%20SafeCracker.3mf).
 
 ---
 
 ## Gameplay
 
-The safe hides a randomly generated combination of numbers, each in the range 0–39. To open
-it, the player must enter every number in order — and, like a real combination lock, must
-**alternate rotation direction on every stage**: clockwise, counterclockwise, clockwise, and
-so on. Landing on the right number while turning the wrong way still fails.
+The safe hides a random combination, with each number between 0 and 39. The player has to
+enter every number in order, and like a real lock, the turn direction alternates each stage:
+clockwise, counterclockwise, clockwise, and so on. Landing on the right number while turning
+the wrong way still counts as wrong.
 
-Two cues help. A distinct "correct" click plays the instant the dial lands on the right
-number for the current stage, and the HEX displays and LEDs track progress live. The player
-gets **3 wrong guesses** and a configurable countdown. Running out of either drops the game
-into a fail state with a blaring alarm; entering the full sequence opens the safe.
+Two things help the player. A different click sound plays when the dial reaches the correct
+number for the current stage, and the HEX displays and LEDs show progress as they go. The
+player gets **3 wrong guesses** and a time limit they choose before starting. Running out of
+either ends the game with an alarm. Entering the full combination opens the safe.
 
 ### Controls
 
@@ -117,136 +115,152 @@ into a fail state with a blaring alarm; entering the full sequence opens the saf
 
 ![Block diagram](docs/SafeCracker_Block-Diagram.png)
 
-The program is a single `main()` render-and-audio loop fed by three independent interrupt
-sources. Nothing polls for input: the main loop only draws frames, pushes audio samples, and
-mirrors state onto the HEX displays and LEDs, while every state change happens inside an ISR.
+The program is one main loop that draws frames, plays audio, and updates the HEX displays
+and LEDs. It never checks the inputs itself. All input is handled by three interrupts that
+update the game state, and the main loop just shows whatever that state is.
 
-### 1. Interrupt layer
+### 1. Interrupts
 
-A single RISC-V trap handler reads `mcause` and dispatches on the IRQ line. `mstatus`,
-`mtvec`, and `mie` are configured directly with inline assembly (`csrw` / `csrs` / `csrc`).
+One handler reads the `mcause` register to find out which interrupt fired, then calls the
+matching routine. The control registers (`mstatus`, `mtvec`, `mie`) are set up with inline
+assembly.
 
-| IRQ | Source | Responsibility |
+| IRQ | Source | What it does |
 | --- | --- | --- |
-| 27 | JP1 parallel port | Rotary encoder edges — debounce, decode direction, update dial position |
-| 18 | KEY0–3 | Screen transitions, guess confirmation, time-limit adjustment |
-| 16 | FPGA interval timer | 1 Hz countdown tick; triggers the fail state at zero |
+| 27 | JP1 parallel port | Rotary encoder edges — debounce, find direction, update dial position |
+| 18 | KEY0–3 | Screen changes, confirming a guess, adjusting the time limit |
+| 16 | FPGA interval timer | Counts the timer down once per second, and fails the game at zero |
 
-The interval timer is loaded with the full 100 MHz clock rate and configured with
-`START | CONT | ITO` so it fires exactly once per second.
+The interval timer is loaded with the 100 MHz clock rate, so it interrupts exactly once per
+second.
 
-### 2. Rotary encoder decoding
+### 2. Reading the rotary encoder
 
-Mechanical encoders are noisy, and a naive edge count produced dozens of phantom steps per
-detent. The fix is layered:
+Mechanical encoders bounce. One click of the dial produced many false edges, which made the
+on-screen dial jump around. Three things fixed it:
 
-* **Hardware.** 10 µF ceramic capacitors on the CLK and DT lines form an RC low-pass with
-  the encoder's pull-up resistors, absorbing the worst of the contact chatter before it ever
-  reaches the FPGA.
-* **Software debounce.** Each accepted edge timestamps the RISC-V machine timer (`mtime`).
-  Any edge arriving within 180,000 ticks of the last accepted one is discarded outright.
-* **Edge division.** The encoder emits two clean transitions per physical detent, so the ISR
-  counts edges and only advances the dial on every second one.
+* **Hardware.** A 10 µF ceramic capacitor on each of the CLK and DT lines. Together with the
+  encoder's pull-up resistors this forms an RC filter that smooths out most of the bounce
+  before the signal reaches the board.
+* **Software debounce.** Every accepted edge records the value of the RISC-V machine timer.
+  Any edge that arrives less than 180,000 ticks later is ignored.
+* **Edge counting.** The encoder gives two edges per click of the dial, so the handler only
+  moves the dial on every second edge.
 
-Direction comes from comparing the two phase levels at the moment of the interrupt: if CLK
-and DT differ, the encoder is turning clockwise; if they match, counterclockwise. The dial
-position wraps within 0–39, and the direction is latched so the game logic can check it
-against the alternating-rotation rule when the player confirms a guess.
+Direction comes from comparing CLK and DT when the interrupt fires. If they are different,
+the dial is turning clockwise. If they are the same, counterclockwise. The dial position
+wraps around at 0 and 39, and the direction is saved so the game can check it when the
+player confirms a guess.
 
 ### 3. Game logic
 
-Game state lives in a small set of `volatile` globals shared between the ISRs and the main
-loop — dial position, combination array, current stage, latched spin direction, wrong-guess
-count, and the active screen. The combination is regenerated on every game start with
-`rand()`, seeded from the machine timer so each run differs.
+The game state is a set of `volatile` globals shared between the interrupt handlers and the
+main loop: dial position, the combination, the current stage, the last turn direction, the
+number of wrong guesses, and which screen is showing. A new combination is generated with
+`rand()` at the start of each game, seeded from the machine timer so it is different every
+time.
 
-On `KEY0` the game compares both the number **and** the direction against the expected
-values for the current stage (`stage % 2` selects clockwise or counterclockwise). A correct
-guess advances a stage or, on the last stage, unlocks the safe. A wrong guess resets stage
-progress to zero, burns one of the three lives, and sends the player back to the first
-number — the combination itself is not regenerated, so a careful player can still recover.
+When the player presses `KEY0`, the game checks both the number and the turn direction
+against what the current stage expects (`stage % 2` picks clockwise or counterclockwise). A
+correct guess moves to the next stage, or opens the safe if it was the last one. A wrong
+guess resets progress back to the first number and costs one of the three attempts. The
+combination itself stays the same, so the player can still finish the game.
 
-Screen state is a five-way enum (`INTRO`, `HELP`, `GAME`, `PASS`, `FAIL`) that both the
-render path and the input handlers switch on, keeping drawing and logic decoupled.
+The screen is tracked as one of five states (`INTRO`, `HELP`, `GAME`, `PASS`, `FAIL`). Both
+the drawing code and the input handlers switch on it, which keeps the graphics separate from
+the game logic.
 
-### 4. Visual system
+### 4. Graphics
 
-The graphics stack is written from scratch on top of a single `plot_pixel()` primitive.
+All of the graphics are built on one function that writes a single pixel.
 
-* **Double buffering.** Two `240 x 512` 16-bit buffers are allocated statically. Each frame
-  is drawn entirely into the back buffer and swapped on vertical sync, so the dial animation
-  never tears. The 512-pixel stride lets pixel addressing collapse into shifts:
-  `base + (y << 10) + (x << 1)`.
-* **Rasterization.** Lines use Bresenham's algorithm with the steep-slope swap; circle
-  outlines use the midpoint circle algorithm, drawing one 45° arc and mirroring it eight
-  ways. Filled circles use a bounding-box scan with a squared-distance test — no square
-  roots anywhere.
-* **Fixed-point trigonometry.** With no FPU available, sine and cosine are 40-entry integer
-  lookup tables scaled by 1024. Angles are tracked in tenths of a degree (0–3599), so each
-  of the 40 dial positions sits exactly 90 units apart and every trig result is recovered
-  with one integer divide.
-* **The live dial.** All 40 tick marks are recomputed every frame against the current dial
-  angle: long marks with engraved numbers every 5 positions, short marks in between, plus
-  the outer face, the center knob, and a fixed red pointer drawn last.
-* **Custom bitmap font.** Digits are stored as a 3x5 grid packed into nibbles (`0x7` renders
-  as `[X][X][X]`) and scaled at draw time. The same routine renders the 1-digit dial labels
-  at scale 1 and the 3-digit countdown at scale 5.
-* **Overdraw avoidance.** The gameplay screen skips the usual clear-to-black entirely,
-  because the full-screen brick wall image already covers every pixel — one fewer full-frame
-  pass per frame.
-* **Chroma keying.** The pass and fail emotes are stored on a magenta background (`0xF81F`),
-  which the plot routine skips per pixel to composite them transparently over the wall.
+* **Double buffering.** Two 240x512 buffers are stored in memory. The full frame is drawn
+  into the back buffer and swapped on vertical sync, so the dial does not flicker while
+  turning. The 512-pixel width means a pixel address is just `base + (y << 10) + (x << 1)`,
+  with no multiplication.
+* **Lines and circles.** Lines use Bresenham's algorithm. Circle outlines use the midpoint
+  circle algorithm, which draws one eighth of the circle and mirrors it around. Filled
+  circles check `x² + y² <= r²` over a square area, so there are no square roots.
+* **Fixed-point math.** There is no floating point hardware, so sine and cosine are 40-entry
+  integer tables with every value multiplied by 1024. Angles are stored in tenths of a
+  degree, which puts each of the 40 dial positions exactly 90 units apart. Results are
+  divided by 1024 after use.
+* **The dial.** All 40 tick marks are redrawn every frame at the current angle: longer marks
+  with a number every 5 positions, shorter marks in between, then the dial face, the centre
+  knob, and a red pointer on top.
+* **Digits.** Numbers are drawn from a 3x5 bitmap font stored as hex values, where `0x7` is
+  three pixels on in a row. The same function draws the small dial numbers and the large
+  3-digit timer, just at a different scale.
+* **Skipping the screen clear.** The gameplay screen does not clear to black first, because
+  the brick wall image already covers every pixel. That saves a full pass over the frame
+  every time.
+* **Transparency.** The pass and fail emojis are saved on a magenta background (`0xF81F`).
+  The drawing function skips that colour, so they sit on top of the wall without a box
+  around them.
 
 ### 5. Audio
 
-Six sound effects are held in memory as PCM sample arrays and pushed into the audio codec's
-output FIFO. Two playback modes coexist:
+Six sound effects are stored in memory as sample arrays and written into the audio chip's
+output FIFO. There are two ways to play them:
 
-* **Non-blocking** (`audioService`) — called every iteration of the main loop, it tops up
-  the FIFO only while there is space, so dial clicks play without ever stalling rendering.
-* **Blocking** (`audioPlayback`) — used for the pass, fail, and wrong-guess cues where the
-  clip must play to completion. It busy-waits on FIFO space, and the buffer state is
-  explicitly reset afterwards so the non-blocking path resumes cleanly.
+* **Non-blocking** (`audioService`) — called every time through the main loop. It only
+  writes samples while there is space in the FIFO, so dial clicks play without slowing down
+  the graphics.
+* **Blocking** (`audioPlayback`) — used for the correct guess, wrong guess, pass, and fail
+  sounds, which need to finish before the game moves on. It waits for FIFO space, and the
+  buffer is reset afterwards so the non-blocking playback still works.
 
-The FIFOs are cleared through the control register (`0x8` then `0x0`) before every new clip,
-which is what makes rapid-fire ratchet clicks feel responsive instead of queued.
+The FIFO is cleared before each new sound, which is what stops fast dial clicks from queuing
+up behind each other.
 
-| Sound | Samples | Trigger |
+| Sound | Samples | When it plays |
 | --- | --- | --- |
-| `ratchet` | 160 | Every encoder detent |
-| `correctRatchet` | 1,200 | Dial lands on the correct number for the current stage |
-| `correctGuess` | 5,120 | Confirmed correct stage |
-| `wrongGuess` | 8,880 | Confirmed wrong stage |
+| `ratchet` | 160 | Every click of the dial |
+| `correctRatchet` | 1,200 | Dial reaches the correct number for the current stage |
+| `correctGuess` | 5,120 | Correct stage confirmed |
+| `wrongGuess` | 8,880 | Wrong stage confirmed |
 | `safeOpen` | 21,120 | Full combination entered |
-| `alarm` | 39,282 | Fail state, looped until reset |
+| `alarm` | 39,282 | Fail screen, looped until reset |
 
-### 6. Asset pipeline
+### 6. Images and sounds
 
-There is no filesystem on the board, so every image and sound is compiled directly into the
-binary as a C array.
+The board has no filesystem, so every image and sound is compiled into the program as a C
+array.
 
-* **Images** — [`image-assets/convert_img.py`](image-assets/convert_img.py) loads a PNG with
-  OpenCV, resizes it with nearest-neighbour interpolation, packs each pixel into RGB565
-  (`R >> 3 << 11 | G >> 2 << 5 | B >> 3`), and emits both the `short unsigned int` array and
-  matching `plot_image_*` / `erase_image_*` functions.
-* **Screens** — the start and help screens are generated programmatically with a Pillow
-  script that renders text, drop shadows, and layout at 3x resolution before downsampling to
-  320x240, so the 240p output stays crisp. The help text is externalized to a plain text
-  file, making a copy change a one-line edit rather than a re-render by hand.
-* **Audio** — the source MP3s in `audio-assets/` were decoded to mono PCM and exported as
-  32-bit signed sample arrays.
+* **Images.** [`image-assets/convert_img.py`](image-assets/convert_img.py) opens a PNG with
+  OpenCV, resizes it, and converts each pixel to 16-bit RGB565 (5 bits red, 6 green, 5
+  blue). It prints out the C array along with matching plot and erase functions.
+* **Screens.** The start and help screens are generated by a Python script using Pillow. It
+  draws the text and layout at 3x size and then scales it down to 320x240, which keeps the
+  text sharp at that resolution. The help text sits in a separate text file, so changing the
+  wording does not mean editing the script.
+* **Audio.** The MP3 files in `audio-assets/` were converted to mono PCM and written out as
+  arrays of 32-bit samples.
 
-Together the compiled-in assets come to roughly **1.4 MB** of static data: about 674 KB of
-images, 296 KB of audio, and 480 KB of frame buffers.
+Altogether this is about **1.4 MB** compiled into the program: roughly 674 KB of images,
+296 KB of audio, and 480 KB for the two frame buffers.
 
 ---
 
 ## Attribution
 
-| Member | Contributions |
-| --- | --- |
-| **Tej Patel** | Rotary encoder (JP1 wiring, interrupt decoding, hardware and software debounce, direction tracking), 3D-printed enclosure design, KEY interrupt handling, HEX display and LED output, SW-based stage selection, the full audio subsystem (MP3 to C array conversion, blocking and non-blocking FIFO playback), core game logic (random code generation, stage tracking, guess validation), and integration of the game logic with the VGA system |
-| **Leo Zou** | VGA graphics system (pixel plotting, double buffering, vsync, line and circle rasterization), live safe dial rendering (rotating numbered face, tick marks, pointer, knob), interval-timer countdown logic and time-limit controls, the digit rendering and 3-digit timer display, and the design and integration of the intro, help, gameplay, pass, fail, and wall background screens |
+**Tej Patel**
+
+* Rotary encoder: JP1 wiring, interrupt decoding, hardware and software debounce, and
+  direction tracking
+* 3D-printed enclosure, modelled in Tinkercad
+* KEY interrupts, HEX display and LED output, and switch-based stage selection
+* Audio: MP3 to C array conversion, plus the blocking and non-blocking FIFO playback
+* Game logic: random combination generation, stage tracking, and guess checking
+* Connecting the game logic to the VGA system
+
+**Leo Zou**
+
+* VGA graphics: pixel plotting, double buffering, vsync, and line and circle drawing
+* The live safe dial: rotating numbered face, tick marks, pointer, and centre knob
+* Countdown timer using the FPGA interval timer, and the time limit controls
+* Digit drawing and the 3-digit timer display
+* Designing and integrating the intro, help, gameplay, pass, fail, and wall screens
 
 Full details are in the [final report](docs/SafeCracker_Final-Report.pdf) and the original
 [project plan](docs/SafeCracker_Project-Plan.pdf).
